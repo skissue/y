@@ -81,7 +81,7 @@ This strips the path and query string, returning just the server base URL."
     (concat scheme "://"
             (if user (concat user "@") "")
             host
-            (or port ""))))
+            (if port (format ":%d" port) ""))))
 
 (defun elfeed-protocol-miniflux--get-last-sync-time (proto-id)
   "Get last sync time for PROTO-ID.
@@ -327,12 +327,8 @@ Returns an integer because `elfeed-new-date-for-entry' only handles
 integer timestamps correctly (floats cause it to fall back to current time)."
   (if (and date-string (stringp date-string))
       (condition-case nil
-          (truncate (float-time (parse-iso8601-time-string date-string)))
-        (error
-         ;; Fallback for dates without timezone
-         (condition-case nil
-             (truncate (float-time (date-to-time date-string)))
-           (error (truncate (float-time))))))
+          (truncate (float-time (date-to-time date-string)))
+        (error (truncate (float-time))))
     (truncate (float-time))))
 
 (defun elfeed-protocol-miniflux--parse-entries (host-url content &optional mark-state callback)
@@ -428,10 +424,10 @@ with the result entries as argument.  Return parsed entries."
 
                          ;; force override unread and star tags without repeat sync operation
                          (when original
-                           (if unread (elfeed-tag-1 original 'unread)
-                             (elfeed-untag-1 original 'unread))
-                           (if starred (elfeed-tag-1 original elfeed-protocol-miniflux-star-tag)
-                             (elfeed-untag-1 original elfeed-protocol-miniflux-star-tag)))
+                           (if unread (elfeed-tag original 'unread)
+                             (elfeed-untag original 'unread))
+                           (if starred (elfeed-tag original elfeed-protocol-miniflux-star-tag)
+                             (elfeed-untag original elfeed-protocol-miniflux-star-tag)))
 
                          ;; calculate the last modified time and first/last entry id
                          (when (or (< min-first-entry-id 0) (< id min-first-entry-id))
@@ -484,8 +480,7 @@ call it with the result entries as argument."
          (url-base (concat host-url elfeed-protocol-miniflux-api-entries))
          (mark-state t)
          url-opt)
-    (unless elfeed--inhibit-update-init-hooks
-      (run-hooks 'elfeed-update-init-hooks))
+    (run-hooks 'elfeed-update-init-hook)
     (cond
      ;; initial sync, fetch unread entries
      ((eq action 'init)
@@ -523,7 +518,7 @@ call it with the result entries as argument."
       ;; Update last-sync-time after successful fetch
       (when (or (eq action 'init) (eq action 'sync-status))
         (elfeed-protocol-miniflux--set-last-sync-time proto-id (truncate (float-time))))
-      (run-hook-with-args 'elfeed-update-hooks host-url))
+      (run-hook-with-args 'elfeed-update-hook host-url))
     (when (eq action 'init)
       ;; initial sync, also fetch starred entries
       (let ((url-starred (format "%s?starred=true&limit=%d&order=published_at&direction=desc"
@@ -531,7 +526,7 @@ call it with the result entries as argument."
         (elfeed-protocol-miniflux-with-fetch url-starred "GET" nil
           ;; do not remember the last-modified for starred entries
           (elfeed-protocol-miniflux--parse-entries host-url result nil callback)
-          (run-hook-with-args 'elfeed-update-hooks url-starred))))))
+          (run-hook-with-args 'elfeed-update-hook url-starred))))))
 
 (defun elfeed-protocol-miniflux-reinit (host-url)
   "Retry initial sync operation.

@@ -14,10 +14,10 @@
 
 (cl-defstruct (emcps-server
                (:constructor emcps-server--create))
-  process host port path allowed-origins max-body-size)
+  process host port path tools allowed-origins max-body-size)
 
 (defvar emcps-http-current-server nil
-  "Currently running EMCPS server, if any.")
+  "Most recently started EMCPS server, if any.")
 
 (defconst emcps-http--reason-phrases
   '((200 . "OK")
@@ -148,8 +148,8 @@ Return plist with :method, :target, :version and :headers."
    proc status
    `(:jsonrpc "2.0" :error (:code ,code :message ,message) :id nil)))
 
-(defun emcps-http--handle-post (proc request)
-  "Handle POST REQUEST on PROC."
+(defun emcps-http--handle-post (server proc request)
+  "Handle POST REQUEST for SERVER on PROC."
   (let* ((headers (plist-get request :headers))
          (body (plist-get request :body)))
     (cond
@@ -162,7 +162,9 @@ Return plist with :method, :target, :version and :headers."
      (t
       (condition-case err
           (let* ((message (emcps-json-parse-string body))
-                 (handled (emcps-jsonrpc-handle message))
+                 (handled (emcps-jsonrpc-handle
+                           message
+                           (emcps-server-tools server)))
                  (response (plist-get handled :response)))
             (if response
                 (emcps-http--send-json proc 200 response)
@@ -184,7 +186,7 @@ Return plist with :method, :target, :version and :headers."
      ((not (string= target (emcps-server-path server)))
       (emcps-http--send-json-error proc 404 -32600 "Not found"))
      ((string= method "POST")
-      (emcps-http--handle-post proc request))
+      (emcps-http--handle-post server proc request))
      ((or (string= method "GET") (string= method "DELETE"))
       (emcps-http--send-empty proc 405))
      (t
@@ -202,14 +204,13 @@ Return plist with :method, :target, :version and :headers."
         (emcps-http--handle-request server proc request)))))
 
 (cl-defun emcps-start-server (&key (host "127.0.0.1") (port 7072) (path "/mcp")
-                                   allowed-origins (max-body-size (* 1024 1024)))
+                                   tools allowed-origins
+                                   (max-body-size (* 1024 1024)))
   "Start an MCP HTTP server.
-HOST, PORT and PATH define the listening endpoint.  ALLOWED-ORIGINS is
+HOST, PORT and PATH define the listening endpoint.  TOOLS is an
+list of `emcps-tool' values, or nil for no tools.  ALLOWED-ORIGINS is
 nil for localhost-only Origin validation, t for any origin, or a list of
 exact Origin strings.  MAX-BODY-SIZE is the request limit in bytes."
-  (when (and emcps-http-current-server
-             (process-live-p (emcps-server-process emcps-http-current-server)))
-    (error "emcps server is already running"))
   (let (server listener)
     (setq listener
           (make-network-process
@@ -229,6 +230,7 @@ exact Origin strings.  MAX-BODY-SIZE is the request limit in bytes."
            :host host
            :port (process-contact listener :service)
            :path path
+           :tools (emcps-tools-ensure tools)
            :allowed-origins allowed-origins
            :max-body-size max-body-size))
     (setq emcps-http-current-server server)

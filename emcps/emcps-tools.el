@@ -1,4 +1,4 @@
-;;; emcps-tools.el --- Tool registry for Emacs MCP servers -*- lexical-binding: t; -*-
+;;; emcps-tools.el --- Tool definitions for Emacs MCP servers -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026
 
@@ -8,9 +8,9 @@
 
 ;;; Commentary:
 
-;; A tiny registry for one-shot MCP tools.  The public tool shape mirrors the
-;; gptel/llm tool plist where practical: :name, :function, :description, :args,
-;; :category, :confirm and :async.
+;; Helpers for one-shot MCP tools.  The public tool shape mirrors the
+;; gptel tool plist where practical: :name, :function, :description, :args,
+;; :category, :confirm, :async and :include.
 
 ;;; Code:
 
@@ -60,8 +60,7 @@ ARGS is a list of argument plists.  Each arg uses :name, :type and
 :description, with optional :optional, :enum, :items and :properties.
 CATEGORY, CONFIRM, ASYNC and INCLUDE are accepted for compatibility.
 
-This function only constructs the tool.  Use `emcps-register-tool' to
-expose it from the server."
+Pass a list of these tools as `emcps-start-server' :tools."
   (emcps-tools--preprocess-tool-args args)
   (emcps-tools--make-tool
    :name name
@@ -72,13 +71,6 @@ expose it from the server."
    :confirm confirm
    :async async
    :include include))
-
-(defvar emcps-tools--registry (make-hash-table :test #'equal)
-  "Registered MCP tools keyed by tool name.")
-
-(defun emcps-tools-clear ()
-  "Remove all registered tools."
-  (clrhash emcps-tools--registry))
 
 (defun emcps-tools--plist-tool-p (value)
   "Return non-nil when VALUE looks like a tool plist."
@@ -99,8 +91,8 @@ live outside core."
    (t
     (signal 'wrong-type-argument (list 'emcps-tool tool)))))
 
-(defun emcps-register-tool (tool)
-  "Register TOOL and return the coerced `emcps-tool'."
+(defun emcps-tools--validate-tool (tool)
+  "Validate TOOL and return it."
   (let ((coerced (emcps-tools-coerce tool)))
     (unless (stringp (emcps-tool-name coerced))
       (error "Tool name must be a string"))
@@ -109,24 +101,30 @@ live outside core."
     (when (emcps-tool-async coerced)
       (error "Async tools are not supported in the MVP: %s"
              (emcps-tool-name coerced)))
-    (puthash (emcps-tool-name coerced) coerced emcps-tools--registry)
     coerced))
 
-(defun emcps-register-tools (tools)
-  "Register each tool in TOOLS."
-  (mapcar #'emcps-register-tool tools))
+(defun emcps-tools-ensure (tools)
+  "Return a validated list of TOOLS.
+TOOLS must be nil or a list of values accepted by `emcps-tools-coerce'."
+  (let ((seen (make-hash-table :test #'equal))
+        validated)
+    (dolist (tool tools (nreverse validated))
+      (let ((coerced (emcps-tools--validate-tool tool)))
+        (when (gethash (emcps-tool-name coerced) seen)
+          (error "Duplicate tool name: %s" (emcps-tool-name coerced)))
+        (puthash (emcps-tool-name coerced) t seen)
+        (push coerced validated)))))
 
-(defun emcps-get-tool (name)
-  "Return registered tool named NAME, or nil."
-  (gethash name emcps-tools--registry))
+(defun emcps-get-tool (tools name)
+  "Return registered tool named NAME from TOOLS, or nil."
+  (cl-find name tools :key #'emcps-tool-name :test #'equal))
 
-(defun emcps-list-tools ()
-  "Return registered tools sorted by name."
-  (let (tools)
-    (maphash (lambda (_ tool) (push tool tools)) emcps-tools--registry)
-    (sort tools (lambda (a b)
-                  (string< (emcps-tool-name a)
-                           (emcps-tool-name b))))))
+(defun emcps-list-tools (tools)
+  "Return tools in TOOLS sorted by name."
+  (sort (copy-sequence tools)
+        (lambda (a b)
+          (string< (emcps-tool-name a)
+                   (emcps-tool-name b)))))
 
 (defun emcps-tools--json-type (type)
   "Convert gptel/llm TYPE into a JSON Schema type string."
@@ -183,9 +181,9 @@ This mirrors gptel's own tool-schema conversion, adjusted to return MCP's
     :description ,(or (emcps-tool-description tool) "")
     :inputSchema ,(emcps-tool-input-schema tool)))
 
-(defun emcps-tool-descriptors ()
-  "Return MCP descriptors for all registered tools as a vector."
-  (vconcat (mapcar #'emcps-tool-descriptor (emcps-list-tools))))
+(defun emcps-tool-descriptors (tools)
+  "Return MCP descriptors for all tools in TOOLS as a vector."
+  (vconcat (mapcar #'emcps-tool-descriptor (emcps-list-tools tools))))
 
 (defun emcps-tools--keyword-for-name (name)
   "Return plist keyword for JSON object field NAME."
@@ -210,9 +208,9 @@ This mirrors gptel's own tool-schema conversion, adjusted to return MCP's
       (plist-member arguments (emcps-tools--keyword-for-name name)))
      (t nil))))
 
-(defun emcps-call-tool (name arguments)
-  "Call registered tool NAME with JSON object ARGUMENTS."
-  (let ((tool (emcps-get-tool name)))
+(defun emcps-call-tool (tools name arguments)
+  "Call tool NAME from TOOLS with JSON object ARGUMENTS."
+  (let ((tool (emcps-get-tool tools name)))
     (unless tool
       (jsonrpc-error :code -32602 :message (format "Unknown tool: %s" name)))
     (let ((values

@@ -55,17 +55,17 @@ returning a normal JSON-RPC response."
       :serverInfo (:name ,emcps-server-name
                    :version ,emcps-server-version))))
 
-(defun emcps-protocol-tools-list (_params)
+(defun emcps-protocol-tools-list (_params tools)
   "Return MCP tools/list result."
-  `(:tools ,(emcps-tool-descriptors)))
+  `(:tools ,(emcps-tool-descriptors tools)))
 
-(defun emcps-protocol-tools-call (params)
+(defun emcps-protocol-tools-call (params tools)
   "Return MCP tools/call result for PARAMS."
   (let* ((name (plist-get params :name))
          (arguments (or (plist-get params :arguments) '())))
     (condition-case err
         (emcps-protocol--tool-result
-         (emcps-call-tool name arguments)
+         (emcps-call-tool tools name arguments)
          nil)
       (jsonrpc-error
        (signal (car err) (cdr err)))
@@ -74,13 +74,13 @@ returning a normal JSON-RPC response."
         (error-message-string err)
         t)))))
 
-(defun emcps-protocol-dispatch-request (_conn method params)
+(defun emcps-protocol-dispatch-request (_conn method params &optional tools)
   "Dispatch MCP request METHOD with PARAMS."
   (pcase (symbol-name method)
     ("initialize" (emcps-protocol-initialize params))
     ("ping" '())
-    ("tools/list" (emcps-protocol-tools-list params))
-    ("tools/call" (emcps-protocol-tools-call params))
+    ("tools/list" (emcps-protocol-tools-list params tools))
+    ("tools/call" (emcps-protocol-tools-call params tools))
     (_ (jsonrpc-error :code -32601
                       :message (format "Method not found: %s" method)))))
 

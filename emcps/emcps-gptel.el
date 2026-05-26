@@ -24,10 +24,6 @@
    :async (gptel-tool-async tool)
    :include (gptel-tool-include tool)))
 
-(defun emcps-register-gptel-tool (tool)
-  "Convert and register gptel TOOL."
-  (emcps-register-tool (emcps-gptel-tool tool)))
-
 (provide 'emcps-gptel)
 
 ;;; emcps-gptel.el ends here

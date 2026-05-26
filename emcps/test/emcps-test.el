@@ -52,78 +52,67 @@
                    "boolean"))))
 
 (ert-deftest emcps-jsonrpc-tools-call ()
-  (unwind-protect
-      (progn
-        (emcps-tools-clear)
-        (emcps-register-tool
-         (emcps-make-tool
-          :name "echo"
-          :function #'identity
-          :description "Echo text."
-          :args '((:name "text" :type string :description "Text."))))
-        (let* ((handled (emcps-jsonrpc-handle
-                         '(:jsonrpc "2.0"
-                           :id 1
-                           :method "tools/call"
-                           :params (:name "echo" :arguments (:text "hello")))))
-               (response (plist-get handled :response))
-               (result (plist-get response :result))
-               (content (plist-get result :content)))
-          (should (equal (plist-get response :id) 1))
-          (should (equal (plist-get (aref content 0) :text) "hello"))))
-    (emcps-tools-clear)))
-
-(ert-deftest emcps-register-tool-rejects-async-tools ()
-  (unwind-protect
-      (progn
-        (emcps-tools-clear)
-        (should-error
-         (emcps-register-tool
+  (let ((tools
+         (list
           (emcps-make-tool
-           :name "later"
-           :function (lambda (_callback) nil)
-           :description "Async tool."
-           :args nil
-           :async t))
-         :type 'error)
-        (should-not (emcps-get-tool "later")))
-    (emcps-tools-clear)))
+           :name "echo"
+           :function #'identity
+           :description "Echo text."
+           :args '((:name "text" :type string :description "Text."))))))
+    (let* ((handled (emcps-jsonrpc-handle
+                     '(:jsonrpc "2.0"
+                       :id 1
+                       :method "tools/call"
+                       :params (:name "echo" :arguments (:text "hello")))
+                     tools))
+           (response (plist-get handled :response))
+           (result (plist-get response :result))
+           (content (plist-get result :content)))
+      (should (equal (plist-get response :id) 1))
+      (should (equal (plist-get (aref content 0) :text) "hello")))))
+
+(ert-deftest emcps-tools-ensure-rejects-async-tools ()
+  (should-error
+   (emcps-tools-ensure
+    (list
+     (emcps-make-tool
+      :name "later"
+      :function (lambda (_callback) nil)
+      :description "Async tool."
+      :args nil
+      :async t)))
+   :type 'error))
 
 (ert-deftest emcps-jsonrpc-tool-errors-return-call-tool-error-result ()
-  (unwind-protect
-      (progn
-        (emcps-tools-clear)
-        (emcps-register-tool
-         (emcps-make-tool
-          :name "fail"
-          :function (lambda ()
-                      (error "boom from tool"))
-          :description "Fail."
-          :args nil))
-        (let* ((handled (emcps-jsonrpc-handle
-                         '(:jsonrpc "2.0"
-                           :id 1
-                           :method "tools/call"
-                           :params (:name "fail" :arguments ()))))
-               (response (plist-get handled :response))
-               (result (plist-get response :result))
-               (content (plist-get result :content)))
-          (should (equal (plist-get response :id) 1))
-          (should-not (plist-member response :error))
-          (should (eq (plist-get result :isError) t))
-          (should (string-match-p "boom from tool"
-                                  (plist-get (aref content 0) :text)))))
-    (emcps-tools-clear)))
+  (let ((tools
+         (list
+          (emcps-make-tool
+           :name "fail"
+           :function (lambda ()
+                       (error "boom from tool"))
+           :description "Fail."
+           :args nil))))
+    (let* ((handled (emcps-jsonrpc-handle
+                     '(:jsonrpc "2.0"
+                       :id 1
+                       :method "tools/call"
+                       :params (:name "fail" :arguments ()))
+                     tools))
+           (response (plist-get handled :response))
+           (result (plist-get response :result))
+           (content (plist-get result :content)))
+      (should (equal (plist-get response :id) 1))
+      (should-not (plist-member response :error))
+      (should (eq (plist-get result :isError) t))
+      (should (string-match-p "boom from tool"
+                              (plist-get (aref content 0) :text))))))
 
 (defvar emcps-test-state nil
   "State mutated by test tools.")
 
 (ert-deftest emcps-jsonrpc-tool-can-modify-emacs-state ()
   (let ((emcps-test-state nil))
-    (unwind-protect
-        (progn
-          (emcps-tools-clear)
-          (emcps-register-tools
+    (let ((tools
            (list
             (emcps-make-tool
              :name "set_state"
@@ -136,23 +125,24 @@
              :name "get_state"
              :function (lambda () emcps-test-state)
              :description "Get test state."
-             :args nil)))
-          (emcps-jsonrpc-handle
-           '(:jsonrpc "2.0"
-             :id 1
-             :method "tools/call"
-             :params (:name "set_state" :arguments (:value "persisted"))))
-          (should (equal emcps-test-state "persisted"))
-          (let* ((handled (emcps-jsonrpc-handle
-                           '(:jsonrpc "2.0"
-                             :id 2
-                             :method "tools/call"
-                             :params (:name "get_state" :arguments ()))))
-                 (content (plist-get (plist-get (plist-get handled :response)
-                                                :result)
-                                     :content)))
-            (should (equal (plist-get (aref content 0) :text) "persisted"))))
-      (emcps-tools-clear))))
+             :args nil))))
+      (emcps-jsonrpc-handle
+       '(:jsonrpc "2.0"
+         :id 1
+         :method "tools/call"
+         :params (:name "set_state" :arguments (:value "persisted")))
+       tools)
+      (should (equal emcps-test-state "persisted"))
+      (let* ((handled (emcps-jsonrpc-handle
+                       '(:jsonrpc "2.0"
+                         :id 2
+                         :method "tools/call"
+                         :params (:name "get_state" :arguments ()))
+                       tools))
+             (content (plist-get (plist-get (plist-get handled :response)
+                                            :result)
+                                 :content)))
+        (should (equal (plist-get (aref content 0) :text) "persisted"))))))
 
 (ert-deftest emcps-jsonrpc-notification-has-no-response ()
   (let* ((handled (emcps-jsonrpc-handle
@@ -196,24 +186,61 @@
 (ert-deftest emcps-http-integration-tools-list ()
   (let (server)
     (unwind-protect
-        (progn
-          (emcps-tools-clear)
-          (emcps-register-tool
-           (emcps-make-tool
-            :name "echo"
-            :function #'identity
-            :description "Echo text."
-            :args '((:name "text" :type string :description "Text."))))
-          (setq server (emcps-start-server :port t))
+        (let ((tools
+               (list
+                (emcps-make-tool
+                 :name "echo"
+                 :function #'identity
+                 :description "Echo text."
+                 :args '((:name "text" :type string :description "Text."))))))
+          (setq server (emcps-start-server :port t :tools tools))
           (let* ((response (emcps-test--http-post
                             (emcps-server-port server)
                             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"))
-                 (tools (plist-get (plist-get response :result) :tools)))
+                 (listed-tools (plist-get (plist-get response :result) :tools)))
             (should (equal (plist-get response :id) 1))
-            (should (= (length tools) 1))
-            (should (equal (plist-get (car tools) :name) "echo"))))
-      (when server (emcps-stop-server server))
-      (emcps-tools-clear))))
+            (should (= (length listed-tools) 1))
+            (should (equal (plist-get (car listed-tools) :name) "echo"))))
+      (when server (emcps-stop-server server)))))
+
+(ert-deftest emcps-http-servers-own-independent-tool-lists ()
+  (let (server-a server-b)
+    (unwind-protect
+        (let ((tools-a
+               (list
+                (emcps-make-tool
+                 :name "only_a"
+                 :function (lambda () "a")
+                 :description "Server A only."
+                 :args nil)))
+              (tools-b
+               (list
+                (emcps-make-tool
+                 :name "only_b"
+                 :function (lambda () "b")
+                 :description "Server B only."
+                 :args nil))))
+          (setq server-a (emcps-start-server :port t :tools tools-a))
+          (setq server-b (emcps-start-server :port t :tools tools-b))
+          (let* ((response-a (emcps-test--http-post
+                              (emcps-server-port server-a)
+                              "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"))
+                 (response-b (emcps-test--http-post
+                              (emcps-server-port server-b)
+                              "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}"))
+                 (listed-a (plist-get (plist-get response-a :result) :tools))
+                 (listed-b (plist-get (plist-get response-b :result) :tools)))
+            (should (= (length listed-a) 1))
+            (should (= (length listed-b) 1))
+            (should (equal (plist-get (car listed-a) :name) "only_a"))
+            (should (equal (plist-get (car listed-b) :name) "only_b"))
+            (let* ((call-a (emcps-test--http-post
+                            (emcps-server-port server-a)
+                            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"only_b\",\"arguments\":{}}}"))
+                   (error-a (plist-get call-a :error)))
+              (should (equal (plist-get error-a :code) -32602)))))
+      (when server-a (emcps-stop-server server-a))
+      (when server-b (emcps-stop-server server-b)))))
 
 (ert-deftest emcps-http-rejects-get ()
   (let (server)

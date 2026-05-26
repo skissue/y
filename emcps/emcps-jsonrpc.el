@@ -33,11 +33,13 @@
     (setf (emcps-jsonrpc-response connection) message)
     message))
 
-(defun emcps-jsonrpc-make-connection ()
+(defun emcps-jsonrpc-make-connection (&optional tools)
   "Create a JSON-RPC connection for one HTTP request."
   (emcps-jsonrpc-http-connection
    :name "emcps-http"
-   :request-dispatcher #'emcps-protocol-dispatch-request
+   :request-dispatcher (lambda (conn method params)
+                         (emcps-protocol-dispatch-request
+                          conn method params tools))
    :notification-dispatcher #'emcps-protocol-dispatch-notification
    :events-buffer-config '(:size 0 :format full)))
 
@@ -51,7 +53,7 @@
      (id-present 'response)
      (t 'invalid))))
 
-(defun emcps-jsonrpc-handle (message)
+(defun emcps-jsonrpc-handle (message &optional tools)
   "Handle decoded JSON-RPC MESSAGE.
 Return a plist (:kind KIND :response RESPONSE).  RESPONSE is nil for
 accepted notifications and responses."
@@ -63,11 +65,11 @@ accepted notifications and responses."
                          :error (:code -32600 :message "Invalid Request")
                          :id nil)))
       ((or 'notification 'response)
-       (let ((conn (emcps-jsonrpc-make-connection)))
+       (let ((conn (emcps-jsonrpc-make-connection tools)))
          (jsonrpc-connection-receive conn message)
          (list :kind kind :response nil)))
       ('request
-       (let ((conn (emcps-jsonrpc-make-connection)))
+       (let ((conn (emcps-jsonrpc-make-connection tools)))
          (jsonrpc-connection-receive conn message)
          (list :kind kind :response (emcps-jsonrpc-response conn)))))))
 

@@ -9,6 +9,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'emcps-deferred)
 (require 'emcps-jsonrpc)
 (require 'emcps-protocol)
 
@@ -165,10 +166,21 @@ Return plist with :method, :target, :version and :headers."
                  (handled (emcps-jsonrpc-handle
                            message
                            (emcps-server-tools server)))
-                 (response (plist-get handled :response)))
-            (if response
-                (emcps-http--send-json proc 200 response)
-              (emcps-http--send-empty proc 202)))
+                 (response (plist-get handled :response))
+                 (deferred (plist-get handled :deferred))
+                 (response-getter (plist-get handled :response-getter)))
+            (cond
+             (response
+              (emcps-http--send-json proc 200 response))
+             (deferred
+              (emcps-deferred-on-resolve
+               deferred
+               (lambda (_value)
+                 (when (process-live-p proc)
+                   (emcps-http--send-json proc 200
+                                          (funcall response-getter))))))
+             (t
+              (emcps-http--send-empty proc 202))))
         (json-parse-error
          (emcps-http--send-json-error proc 400 -32700 "Parse error"))
         (error

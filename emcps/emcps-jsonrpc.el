@@ -11,12 +11,16 @@
 (require 'eieio)
 (require 'json)
 (require 'jsonrpc)
+(require 'emcps-deferred)
 (require 'emcps-protocol)
 
 (defclass emcps-jsonrpc-http-connection (jsonrpc-connection)
   ((response
     :initform nil
-    :accessor emcps-jsonrpc-response))
+    :accessor emcps-jsonrpc-response)
+   (deferred
+    :initform nil
+    :accessor emcps-jsonrpc-deferred))
   "JSON-RPC connection whose replies are captured in memory.")
 
 (cl-defmethod jsonrpc-connection-send ((connection emcps-jsonrpc-http-connection)
@@ -29,9 +33,20 @@
   (let* ((kind (cond ((or result-supplied-p error) 'reply)
                      (id 'request)
                      (t 'notification)))
-         (message (jsonrpc-convert-to-endpoint connection args kind)))
-    (setf (emcps-jsonrpc-response connection) message)
-    message))
+         (result (plist-get args :result)))
+    (if (and result-supplied-p (emcps-deferred-p result))
+        (progn
+          (setf (emcps-jsonrpc-deferred connection) result)
+          (emcps-deferred-on-resolve
+           result
+           (lambda (value)
+             (let* ((reply-args (plist-put (copy-sequence args) :result value))
+                    (message (jsonrpc-convert-to-endpoint
+                              connection reply-args kind)))
+               (setf (emcps-jsonrpc-response connection) message)))))
+      (let ((message (jsonrpc-convert-to-endpoint connection args kind)))
+        (setf (emcps-jsonrpc-response connection) message)
+        message))))
 
 (defun emcps-jsonrpc-make-connection (&optional tools)
   "Create a JSON-RPC connection for one HTTP request."
@@ -71,7 +86,11 @@ accepted notifications and responses."
       ('request
        (let ((conn (emcps-jsonrpc-make-connection tools)))
          (jsonrpc-connection-receive conn message)
-         (list :kind kind :response (emcps-jsonrpc-response conn)))))))
+         (list :kind kind
+               :response (emcps-jsonrpc-response conn)
+               :deferred (emcps-jsonrpc-deferred conn)
+               :response-getter (lambda ()
+                                  (emcps-jsonrpc-response conn))))))))
 
 (defun emcps-json-parse-string (string)
   "Parse JSON STRING into plist-oriented Elisp data."

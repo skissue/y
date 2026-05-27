@@ -31,7 +31,16 @@
     :name "get_demo_state"
     :function (lambda () (or emcps-demo-state ""))
     :description "Return mutable state stored inside the long-running Emacs process."
-    :args nil))
+    :args nil)
+   (emcps-make-tool
+    :name "async_echo"
+    :function (lambda (callback text)
+                (run-at-time 0.05 nil
+                             (lambda ()
+                               (funcall callback text))))
+    :description "Return the provided text asynchronously."
+    :args '((:name "text" :type string :description "Text to echo later."))
+    :async t))
   "Tools exposed by the demo MCP server.")
 
 (let ((server (emcps-start-server :host "127.0.0.1" :port 7072

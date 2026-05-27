@@ -8,6 +8,7 @@
 
 (require 'cl-lib)
 (require 'jsonrpc)
+(require 'emcps-deferred)
 (require 'emcps-tools)
 
 (defconst emcps-protocol-version "2025-11-25")
@@ -20,6 +21,9 @@
 
 (defvar emcps-server-version "0.1.0"
   "Version reported in MCP initialize responses.")
+
+(defvar emcps-tool-timeout 60
+  "Seconds to wait for an async tool callback before returning an error.")
 
 (defun emcps-protocol-valid-version-p (version)
   "Return non-nil if VERSION is supported."
@@ -64,9 +68,16 @@ returning a normal JSON-RPC response."
   (let* ((name (plist-get params :name))
          (arguments (or (plist-get params :arguments) '())))
     (condition-case err
-        (emcps-protocol--tool-result
-         (emcps-call-tool tools name arguments)
-         nil)
+        (emcps-call-tool-deferred
+         tools
+         name
+         arguments
+         (lambda (value) (emcps-protocol--tool-result value nil))
+         (lambda (value) (emcps-protocol--tool-result value t))
+         (emcps-protocol--tool-result
+          (format "Tool timed out after %s seconds" emcps-tool-timeout)
+          t)
+         emcps-tool-timeout)
       (jsonrpc-error
        (signal (car err) (cdr err)))
       (error

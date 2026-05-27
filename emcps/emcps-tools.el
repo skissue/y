@@ -17,6 +17,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'jsonrpc)
+(require 'emcps-deferred)
 
 (cl-defstruct (emcps-tool
                (:constructor emcps-tools--make-tool
@@ -98,9 +99,6 @@ live outside core."
       (error "Tool name must be a string"))
     (unless (functionp (emcps-tool-function coerced))
       (error "Tool function for %s is not callable" (emcps-tool-name coerced)))
-    (when (emcps-tool-async coerced)
-      (error "Async tools are not supported in the MVP: %s"
-             (emcps-tool-name coerced)))
     coerced))
 
 (defun emcps-tools-ensure (tools)
@@ -208,24 +206,55 @@ This mirrors gptel's own tool-schema conversion, adjusted to return MCP's
       (plist-member arguments (emcps-tools--keyword-for-name name)))
      (t nil))))
 
+(defun emcps-tools--arg-values (tool arguments)
+  "Return positional argument values for TOOL from ARGUMENTS."
+  (mapcar
+   (lambda (arg)
+     (let* ((arg-name (plist-get arg :name))
+            (value (emcps-tools--arg-value arguments arg-name)))
+       (when (and (not (emcps-tools--arg-present-p arguments arg-name))
+                  (not (plist-get arg :optional)))
+         (jsonrpc-error
+          :code -32602
+          :message (format "Missing required tool argument: %s" arg-name)))
+       value))
+   (emcps-tool-args tool)))
+
 (defun emcps-call-tool (tools name arguments)
-  "Call tool NAME from TOOLS with JSON object ARGUMENTS."
+  "Call synchronous tool NAME from TOOLS with JSON object ARGUMENTS."
   (let ((tool (emcps-get-tool tools name)))
     (unless tool
       (jsonrpc-error :code -32602 :message (format "Unknown tool: %s" name)))
-    (let ((values
-           (mapcar
-            (lambda (arg)
-              (let* ((arg-name (plist-get arg :name))
-                     (value (emcps-tools--arg-value arguments arg-name)))
-                (when (and (not (emcps-tools--arg-present-p arguments arg-name))
-                           (not (plist-get arg :optional)))
-                  (jsonrpc-error
-                   :code -32602
-                   :message (format "Missing required tool argument: %s" arg-name)))
-                value))
-            (emcps-tool-args tool))))
-      (apply (emcps-tool-function tool) values))))
+    (when (emcps-tool-async tool)
+      (jsonrpc-error :code -32603
+                     :message (format "Tool is async: %s" name)))
+    (apply (emcps-tool-function tool)
+           (emcps-tools--arg-values tool arguments))))
+
+(defun emcps-call-tool-deferred (tools name arguments on-success on-error timeout-value timeout)
+  "Call tool NAME from TOOLS and return a value or deferred.
+ON-SUCCESS and ON-ERROR convert raw tool callback values into protocol
+results.  TIMEOUT-VALUE is used if an async tool does not call back
+within TIMEOUT seconds."
+  (let ((tool (emcps-get-tool tools name)))
+    (unless tool
+      (jsonrpc-error :code -32602 :message (format "Unknown tool: %s" name)))
+    (let ((values (emcps-tools--arg-values tool arguments)))
+      (if (not (emcps-tool-async tool))
+          (funcall on-success (apply (emcps-tool-function tool) values))
+        (let ((deferred (emcps-deferred-create timeout timeout-value)))
+          (condition-case err
+              (apply (emcps-tool-function tool)
+                     (lambda (result)
+                       (emcps-deferred-resolve
+                        deferred
+                        (funcall on-success result)))
+                     values)
+            (error
+             (emcps-deferred-resolve
+              deferred
+              (funcall on-error (error-message-string err)))))
+          deferred)))))
 
 (provide 'emcps-tools)
 

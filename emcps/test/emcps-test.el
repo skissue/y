@@ -71,17 +71,124 @@
       (should (equal (plist-get response :id) 1))
       (should (equal (plist-get (aref content 0) :text) "hello")))))
 
-(ert-deftest emcps-tools-ensure-rejects-async-tools ()
-  (should-error
-   (emcps-tools-ensure
-    (list
-     (emcps-make-tool
-      :name "later"
-      :function (lambda (_callback) nil)
-      :description "Async tool."
-      :args nil
-      :async t)))
-   :type 'error))
+(ert-deftest emcps-tools-ensure-accepts-async-tools ()
+  (let ((tools
+         (emcps-tools-ensure
+          (list
+           (emcps-make-tool
+            :name "later"
+            :function (lambda (_callback) nil)
+            :description "Async tool."
+            :args nil
+            :async t)))))
+    (should (emcps-tool-async (emcps-get-tool tools "later")))))
+
+(ert-deftest emcps-jsonrpc-async-tool-immediate-callback ()
+  (let ((tools
+         (list
+          (emcps-make-tool
+           :name "now"
+           :function (lambda (callback)
+                       (funcall callback "immediate"))
+           :description "Immediate async tool."
+           :args nil
+           :async t))))
+    (let* ((handled (emcps-jsonrpc-handle
+                     '(:jsonrpc "2.0"
+                       :id 1
+                       :method "tools/call"
+                       :params (:name "now" :arguments ()))
+                     tools))
+           (response (plist-get handled :response))
+           (content (plist-get (plist-get response :result) :content)))
+      (should (equal (plist-get (aref content 0) :text) "immediate"))
+      (should (eq (plist-get (plist-get response :result) :isError)
+                  :json-false)))))
+
+(ert-deftest emcps-jsonrpc-async-tool-delayed-callback ()
+  (let ((tools
+         (list
+          (emcps-make-tool
+           :name "later"
+           :function (lambda (callback)
+                       (run-at-time 0.01 nil
+                                    (lambda ()
+                                      (funcall callback "delayed"))))
+           :description "Delayed async tool."
+           :args nil
+           :async t))))
+    (let* ((handled (emcps-jsonrpc-handle
+                     '(:jsonrpc "2.0"
+                       :id 1
+                       :method "tools/call"
+                       :params (:name "later" :arguments ()))
+                     tools))
+           (deferred (plist-get handled :deferred))
+           (response-getter (plist-get handled :response-getter)))
+      (should deferred)
+      (while (not (emcps-deferred-done deferred))
+        (accept-process-output nil 0.02))
+      (let* ((response (funcall response-getter))
+             (content (plist-get (plist-get response :result) :content)))
+        (should (equal (plist-get (aref content 0) :text) "delayed"))
+        (should (eq (plist-get (plist-get response :result) :isError)
+                    :json-false))))))
+
+(ert-deftest emcps-jsonrpc-async-tool-double-callback-ignored ()
+  (let ((tools
+         (list
+          (emcps-make-tool
+           :name "twice"
+           :function (lambda (callback)
+                       (funcall callback "first")
+                       (funcall callback "second"))
+           :description "Double callback async tool."
+           :args nil
+           :async t))))
+    (let* ((handled (emcps-jsonrpc-handle
+                     '(:jsonrpc "2.0"
+                       :id 1
+                       :method "tools/call"
+                       :params (:name "twice" :arguments ()))
+                     tools))
+           (response (plist-get handled :response))
+           (content (plist-get (plist-get response :result) :content)))
+      (should (equal (plist-get (aref content 0) :text) "first")))))
+
+(ert-deftest emcps-jsonrpc-async-tool-timeout-ignores-late-callback ()
+  (let (saved-callback)
+    (let ((tools
+           (list
+            (emcps-make-tool
+             :name "timeout"
+             :function (lambda (callback)
+                         (setq saved-callback callback))
+             :description "Timeout async tool."
+             :args nil
+             :async t)))
+          (emcps-tool-timeout 0.01))
+      (let* ((handled (emcps-jsonrpc-handle
+                       '(:jsonrpc "2.0"
+                         :id 1
+                         :method "tools/call"
+                         :params (:name "timeout" :arguments ()))
+                       tools))
+             (deferred (plist-get handled :deferred))
+             (response-getter (plist-get handled :response-getter)))
+        (while (not (emcps-deferred-done deferred))
+          (accept-process-output nil 0.02))
+        (let* ((timeout-response (funcall response-getter))
+               (timeout-result (plist-get timeout-response :result))
+               (timeout-content (plist-get timeout-result :content)))
+          (should (eq (plist-get timeout-result :isError) t))
+          (should (string-match-p "timed out"
+                                  (plist-get (aref timeout-content 0) :text)))
+          (funcall saved-callback "too late")
+          (let* ((late-response (funcall response-getter))
+                 (late-content (plist-get (plist-get late-response :result)
+                                          :content)))
+            (should (equal (plist-get (aref late-content 0) :text)
+                           (plist-get (aref timeout-content 0) :text)))))))))
 
 (ert-deftest emcps-jsonrpc-tool-errors-return-call-tool-error-result ()
   (let ((tools
@@ -201,6 +308,32 @@
             (should (equal (plist-get response :id) 1))
             (should (= (length listed-tools) 1))
             (should (equal (plist-get (car listed-tools) :name) "echo"))))
+      (when server (emcps-stop-server server)))))
+
+(ert-deftest emcps-http-integration-async-tool-waits-for-callback ()
+  (let (server)
+    (unwind-protect
+        (let ((tools
+               (list
+                (emcps-make-tool
+                 :name "async_echo"
+                 :function (lambda (callback text)
+                             (run-at-time 0.01 nil
+                                          (lambda ()
+                                            (funcall callback text))))
+                 :description "Async echo."
+                 :args '((:name "text" :type string :description "Text."))
+                 :async t))))
+          (setq server (emcps-start-server :port t :tools tools))
+          (let* ((response (emcps-test--http-post
+                            (emcps-server-port server)
+                            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"async_echo\",\"arguments\":{\"text\":\"over http\"}}}"))
+                 (result (plist-get response :result))
+                 (content (plist-get result :content)))
+            (should (equal (plist-get response :id) 1))
+            (should (eq (plist-get result :isError) :json-false))
+            (should (equal (plist-get (car content) :text)
+                           "over http"))))
       (when server (emcps-stop-server server)))))
 
 (ert-deftest emcps-http-servers-own-independent-tool-lists ()

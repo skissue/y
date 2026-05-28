@@ -87,12 +87,12 @@ This strips the path and query string, returning just the server base URL."
   "Get last sync time for PROTO-ID.
 This tracks when we last synced read/starred status from the server,
 separate from :last-modified which tracks new entries by publication time."
-  (let ((last-sync (elfeed-protocol-get-feed-meta-data proto-id :last-sync-time)))
+  (let ((last-sync (elfeed-protocol-get-db-feed-meta proto-id :last-sync-time)))
     (if last-sync last-sync 0)))
 
 (defun elfeed-protocol-miniflux--set-last-sync-time (proto-id timestamp)
   "Set last sync time for PROTO-ID to TIMESTAMP."
-  (elfeed-protocol-set-feed-meta-data proto-id :last-sync-time timestamp))
+  (elfeed-protocol-set-db-feed-meta proto-id :last-sync-time timestamp))
 
 (defconst elfeed-protocol-miniflux-api-base "/v1")
 (defconst elfeed-protocol-miniflux-api-feeds (concat elfeed-protocol-miniflux-api-base "/feeds"))
@@ -132,7 +132,9 @@ Optional argument BODY is the rest Lisp code after operation finished."
           (headers (elfeed-protocol-miniflux--init-headers ,url ,data))
           (no-auth-url (elfeed-protocol-no-auth-url ,url))
           (cb (lambda (status)
-                (if (elfeed-is-status-error status use-curl)
+                (if (if use-curl
+                        (not status)
+                      (eq (car status) :error))
                     (let ((print-escape-newlines t))
                       (elfeed-handle-http-error
                        no-auth-url
